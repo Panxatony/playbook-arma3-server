@@ -1,0 +1,135 @@
+---
+- name: Configure ArmA3 Server Virtual Machine
+  hosts: arma3server
+  gather_facts: true
+
+  vars:
+
+    arma3server_installation: true
+    arma3server_upgrade: false
+    arma3server_firewall:
+      - { port: 2302, protocol: udp }
+
+  vars_files:
+    - ../vars/all.yml
+    - ../vars/passwords.yml
+
+  pre_tasks:
+
+    - name: Check if system role installation was already executed
+      register: armaserver_status
+      always_run: true
+      stat:
+        path=/etc/armaserver-installed
+
+    - name: Enable EPEL Repository
+      yum: name=epel-release state=latest
+      become: yes
+      become_user: root
+      when: ( ansible_distribution == "CentOS" )
+
+    - name: install ansible requirements
+      yum: name="{{ item }}" state=installed
+      become: yes
+      become_user: root
+      with_items:
+        - libselinux-python
+        - firewalld
+
+    - name: upgrade all packages
+      yum: name=* state=latest
+      become: yes
+      become_user: root
+
+    - name: set motd
+      template: src=../templates/etc_motd.j2 dest=/etc/motd owner=root group=root mode=0644
+      become: yes
+      become_user: root
+
+    - name: restart "{{ ansible_hostname }}" machine
+      shell: sleep 2 && shutdown -r now "Ansible updates triggered"
+      async: 1
+      poll: 0
+      become: yes
+      become_user: root
+      ignore_errors: true
+      when: not armaserver_status.stat.exists 
+
+    - name: waiting for server "{{ ansible_hostname }}" to come back
+      local_action: wait_for port=22 host="{{ inventory_hostname }}" state=started delay=30 timeout=600
+      become: no
+      when: not armaserver_status.stat.exists 
+
+  tasks:
+
+    - name: enable firewalld
+      service: name="{{ item }}" state=started enabled=yes
+      become: yes
+      become_user: root
+      with_items:
+       - firewalld
+
+    - name: open firewall ports
+      firewalld: service="{{ item }}" permanent=true state=enabled
+      become: yes
+      become_user: root
+      with_items:
+        - ssh
+
+    - name: Ensure requirements are installed
+      yum: name="{{ item }}" state=installed
+      become: yes
+      become_user: root
+      with_items:
+        - mailx
+        - postfix
+        - curl
+        - wget
+        - gzip
+        - bzip2
+        - python
+        - tmux
+        - glibc.i686
+        - libstdc++
+        - libstdc++.i686
+    
+    - name: create arma3server user group
+      group: name="{{ arma3server_user }}" state=present
+      become: yes
+      become_user: root
+
+    - name: create arma3server user
+      user: name="{{ arma3server_user }}" comment="ArmA3Server Account" shell=/bin/bash group="{{ arma3server_user }}" generate_ssh_key=yes ssh_key_bits=2048 ssh_key_file=.ssh/id_rsa
+      become: yes
+      become_user: root 
+
+    - name: download arma3server
+      get_url: url="{{ arma3server_download_url }}/arma3server" dest="/home/{{ arma3server_user }}/arma3server" mode=0775 owner="{{ arma3server_user }}" group="{{ arma3server_user }}"
+      become: yes
+      become_user: "{{ arma3server_user }}"
+      when: ( arma3server_installation == true and not armaserver_status.stat.exists )
+
+    - name: set steam user
+      lineinfile: dest="/home/{{ arma3server_user }}/arma3server" line='steamuser="{{ steam_user }}"' regexp="^steamuser="
+      become: yes
+      become_user: root
+
+    - name: set steam password
+      lineinfile: dest="/home/{{ arma3server_user }}/arma3server" line='steampass="{{ steam_user_password }}"' regexp="^steampass="
+      become: yes
+      become_user: root
+
+    - name: open arma3server firewall ports
+      firewalld: port="{{ item.port }}/{{item.protocol }}" permanent=true state=enabled
+      become: yes
+      become_user: root
+      with_items:
+        - "{{ arma3server_firewall }}"
+
+  post_tasks:
+
+    - name: create system-state file
+      template: src="../templates/system-state.j2" dest="/etc/armaserver-installed" owner=root group=root mode=0644
+      become: yes
+      become_user: root
+      when: not armaserver_status.stat.exists 
